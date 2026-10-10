@@ -1,0 +1,22 @@
+html {
+min-width: 320px;
+min-height: 100%;
+background: #f7f8fc;
+}
+
+body {
+min-width: 320px;
+min-height: 100vh;
+margin: 0;
+}
+
+button:focus-visible,
+textarea:focus-visible {
+outline: 2px solid #716be5;
+outline-offset: 3px;
+}
+
+::selection {
+background: #dedfff;
+color: #252b45;
+}
