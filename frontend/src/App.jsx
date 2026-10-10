@@ -2,10 +2,13 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-const API_URL = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+const API_URL = (
+  import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
+).replace(/\/$/, "");
 
 function App() {
   const fileInput = useRef(null);
+
   const [file, setFile] = useState(null);
   const [documentText, setDocumentText] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
@@ -15,16 +18,97 @@ function App() {
   const [analysisCount, setAnalysisCount] = useState(0);
   const [analysisHistory, setAnalysisHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState("");
 
-  async function loadHistory() {
+  // Load saved analyses and update the history UI.
+  async function loadHistory(showNotice = false) {
+    setHistoryLoading(true);
+    setHistoryError("");
+
     try {
-      const response = await fetch(`${API_URL}/api/analyses?limit=20`);
-      if (!response.ok) throw new Error("Could not load saved analyses.");
-      const data = await response.json();
-      setAnalysisHistory(Array.isArray(data.analyses) ? data.analyses : []);
-      setAnalysisCount(Number(data.total_count ?? data.count ?? 0));
-    } catch {
-      // The analyzer can still be used locally even if the history API is unavailable.
+      const response = await fetch(
+        `${API_URL}/api/analyses?limit=20`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+          cache: "no-store",
+        }
+      );
+
+      // Read the body as text first so empty or invalid responses
+      // produce a useful error instead of failing silently.
+      const responseText = await response.text();
+
+      if (!response.ok) {
+        throw new Error(
+          `History API returned HTTP ${response.status}` +
+            (responseText ? `: ${responseText.slice(0, 250)}` : ".")
+        );
+      }
+
+      if (!responseText.trim()) {
+        throw new Error(
+          "The history API returned an empty response. Check the backend."
+        );
+      }
+
+      let data;
+
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        throw new Error(
+          "The history API did not return valid JSON. Check the backend response."
+        );
+      }
+
+      // Accept the common API response formats.
+      const records = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.analyses)
+          ? data.analyses
+          : Array.isArray(data?.items)
+            ? data.items
+            : Array.isArray(data?.results)
+              ? data.results
+              : null;
+
+      if (!records) {
+        throw new Error(
+          "Unexpected history response format. Expected an array of analyses."
+        );
+      }
+
+      setAnalysisHistory(records);
+
+      const returnedCount = Number(
+        data?.total_count ?? data?.count ?? records.length
+      );
+
+      setAnalysisCount(
+        Number.isFinite(returnedCount) && returnedCount >= 0
+          ? returnedCount
+          : records.length
+      );
+
+      if (showNotice) {
+        setNotice(
+          `History refreshed successfully. ${records.length} record(s) loaded.`
+        );
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unknown history error.";
+
+      setHistoryError(message);
+
+      if (showNotice) {
+        setNotice(`Could not refresh history: ${message}`);
+      }
+
+      console.error("LexProof history loading failed:", error);
     } finally {
       setHistoryLoading(false);
     }
@@ -113,16 +197,29 @@ function App() {
       }
 
       setAnalysis(data);
+
+      // Refresh saved history after a successful analysis.
       await loadHistory();
+
       setNotice(
         file
-          ? `PDF extracted successfully: ${data.page_count} page(s) processed. ${data.saved_to_database ? "Result saved to database." : ""}`
-          : `Analysis completed successfully. ${data.saved_to_database ? "Result saved to database." : ""}`
+          ? `PDF extracted successfully: ${data.page_count} page(s) processed.${
+              data.saved_to_database
+                ? " Result saved to database."
+                : ""
+            }`
+          : `Analysis completed successfully.${
+              data.saved_to_database
+                ? " Result saved to database."
+                : ""
+            }`
       );
     } catch (error) {
+      console.error("LexProof document analysis failed:", error);
+
       setNotice(
         error.message === "Failed to fetch"
-          ? "Cannot reach the backend. Make sure FastAPI is running at http://127.0.0.1:8000."
+          ? `Cannot reach the backend at ${API_URL}. Check your connection and backend URL.`
           : `Analysis failed: ${error.message}`
       );
     } finally {
@@ -137,7 +234,9 @@ function App() {
       await navigator.clipboard.writeText(analysis.sha256);
       setNotice("SHA-256 hash copied to clipboard.");
     } catch {
-      setNotice("Unable to copy automatically. Select and copy the hash manually.");
+      setNotice(
+        "Unable to copy automatically. Select and copy the hash manually."
+      );
     }
   }
 
@@ -152,13 +251,21 @@ function App() {
     }
   }
 
+  function viewSavedResult(item) {
+    setAnalysis(item);
+    setNotice(`Loaded saved analysis #${item.id}.`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">L</div>
           <div>
-            <h1>LexProof <span>AI</span></h1>
+            <h1>
+              LexProof <span>AI</span>
+            </h1>
             <p>LEGAL INTELLIGENCE</p>
           </div>
         </div>
@@ -167,25 +274,38 @@ function App() {
 
         <nav className="navigation">
           <button
-            className={activeTab === "overview" ? "nav-item active" : "nav-item"}
+            className={
+              activeTab === "overview" ? "nav-item active" : "nav-item"
+            }
             onClick={() => setActiveTab("overview")}
           >
             <span>▦</span> Overview
           </button>
+
           <button
-            className={activeTab === "documents" ? "nav-item active" : "nav-item"}
+            className={
+              activeTab === "documents" ? "nav-item active" : "nav-item"
+            }
             onClick={() => setActiveTab("documents")}
           >
             <span>▤</span> Documents
           </button>
+
           <button
-            className={activeTab === "verification" ? "nav-item active" : "nav-item"}
+            className={
+              activeTab === "verification"
+                ? "nav-item active"
+                : "nav-item"
+            }
             onClick={() => setActiveTab("verification")}
           >
             <span>⬡</span> Blockchain Verification
           </button>
+
           <button
-            className={activeTab === "reports" ? "nav-item active" : "nav-item"}
+            className={
+              activeTab === "reports" ? "nav-item active" : "nav-item"
+            }
             onClick={() => setActiveTab("reports")}
           >
             <span>▧</span> Reports
@@ -201,6 +321,7 @@ function App() {
               registered on the blockchain.
             </p>
           </div>
+
           <div className="network-status">
             <span className="status-dot" />
             <span>Development environment</span>
@@ -220,6 +341,7 @@ function App() {
                   ? "Blockchain Verification"
                   : "Reports"}
           </div>
+
           <div className="topbar-right">
             <span className="network-badge">
               <span className="status-dot" /> Local preview
@@ -234,17 +356,22 @@ function App() {
               <div className="eyebrow">
                 AI-POWERED LEGAL DOCUMENT INTELLIGENCE
               </div>
-              <h2>Clarity for every <span>contract.</span></h2>
+              <h2>
+                Clarity for every <span>contract.</span>
+              </h2>
               <p className="welcome-copy">
                 Understand legal documents, identify clauses that deserve a
                 closer look, and verify document integrity with blockchain
                 technology.
               </p>
             </div>
+
             <div className="hero-emblem" aria-hidden="true">
               <div className="emblem-ring ring-one" />
               <div className="emblem-ring ring-two" />
-              <div className="emblem-center">L<span>✓</span></div>
+              <div className="emblem-center">
+                L<span>✓</span>
+              </div>
               <div className="emblem-spark spark-one">✦</div>
               <div className="emblem-spark spark-two">✧</div>
             </div>
@@ -258,7 +385,9 @@ function App() {
                     <span>Documents selected</span>
                     <span className="stat-icon blue">▤</span>
                   </div>
-                  <div className="stat-value">{file ? "01" : "00"}</div>
+                  <div className="stat-value">
+                    {file ? "01" : "00"}
+                  </div>
                   <div className="stat-foot">In this session</div>
                 </div>
 
@@ -268,7 +397,7 @@ function App() {
                     <span className="stat-icon purple">✧</span>
                   </div>
                   <div className="stat-value">{analysisCount}</div>
-                  <div className="stat-foot">Completed this session</div>
+                  <div className="stat-foot">Saved analyses</div>
                 </div>
 
                 <div className="stat-card">
@@ -277,7 +406,9 @@ function App() {
                     <span className="stat-icon green">⬡</span>
                   </div>
                   <div className="stat-value">0</div>
-                  <div className="stat-foot">Blockchain integration pending</div>
+                  <div className="stat-foot">
+                    Blockchain integration pending
+                  </div>
                 </div>
               </section>
 
@@ -327,7 +458,8 @@ function App() {
                   />
 
                   <div className="privacy-note">
-                    <span>▣</span> Do not upload sensitive documents to this demo.
+                    <span>▣</span> Do not upload sensitive documents to this
+                    demo.
                   </div>
                 </div>
 
@@ -350,7 +482,11 @@ function App() {
 
                   <div className="textarea-footer">
                     <span>{documentText.length} characters</span>
-                    <button className="text-clear" onClick={clearDocument}>
+                    <button
+                      type="button"
+                      className="text-clear"
+                      onClick={clearDocument}
+                    >
                       Clear
                     </button>
                   </div>
@@ -367,6 +503,7 @@ function App() {
                 </div>
 
                 <button
+                  type="button"
                   className="primary-button"
                   onClick={handleAnalyze}
                   disabled={loading}
@@ -386,45 +523,84 @@ function App() {
                 <div className="section-heading">
                   <div>
                     <h3>Saved analysis history</h3>
-                    <p>Recent results retrieved from the connected database.</p>
+                    <p>
+                      Recent results retrieved from the connected backend.
+                    </p>
                   </div>
+
                   <button
                     type="button"
                     className="secondary-button"
-                    onClick={loadHistory}
+                    onClick={() => loadHistory(true)}
                     disabled={historyLoading}
                   >
                     {historyLoading ? "Loading..." : "Refresh history"}
                   </button>
                 </div>
 
+                {historyError && (
+                  <div className="notice" role="alert">
+                    <strong>History could not be loaded.</strong>
+                    <p>{historyError}</p>
+                    <p>
+                      Check the browser Console and the backend response.
+                    </p>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => loadHistory(true)}
+                      disabled={historyLoading}
+                    >
+                      Try again
+                    </button>
+                  </div>
+                )}
+
                 {historyLoading ? (
-                  <div className="panel flags-panel"><p>Loading saved analyses...</p></div>
+                  <div className="panel flags-panel">
+                    <p>Loading saved analyses...</p>
+                  </div>
                 ) : analysisHistory.length === 0 ? (
                   <div className="panel flags-panel">
-                    <p>No saved analyses yet. Analyze a PDF or paste text to create your first record.</p>
+                    <p>
+                      {historyError
+                        ? "History is unavailable until the error above is resolved."
+                        : "No saved analyses found. Analyze a PDF or paste text to create your first record."}
+                    </p>
                   </div>
                 ) : (
                   <div className="panel flags-panel">
                     <div className="flag-list">
-                      {analysisHistory.map((item) => (
-                        <div className="flag-item" key={item.id}>
+                      {analysisHistory.map((item, index) => (
+                        <div
+                          className="flag-item"
+                          key={item.id ?? `${item.document_name}-${index}`}
+                        >
                           <div className="flag-heading">
-                            <strong>{item.document_name || "Pasted text"}</strong>
-                            <span>{item.source_type === "pdf" ? `PDF · ${item.page_count ?? "?"} pages` : "Text scan"}</span>
+                            <strong>
+                              {item.document_name || "Pasted text"}
+                            </strong>
+                            <span>
+                              {item.source_type === "pdf"
+                                ? `PDF · ${item.page_count ?? "?"} pages`
+                                : "Text scan"}
+                            </span>
                           </div>
+
                           <p>
-                            {item.created_at ? new Date(item.created_at).toLocaleString() : "Saved analysis"}
-                            {" · "}{item.word_count} words · {item.flags?.length ?? 0} topics flagged
+                            {item.created_at
+                              ? new Date(item.created_at).toLocaleString()
+                              : "Saved analysis"}
+                            {" · "}
+                            {item.word_count ?? 0} words
+                            {" · "}
+                            {item.flags?.length ?? 0} topics flagged
                           </p>
+
                           <button
                             type="button"
                             className="secondary-button"
-                            onClick={() => {
-                              setAnalysis(item);
-                              setNotice(`Loaded saved analysis #${item.id}.`);
-                              window.scrollTo({ top: 0, behavior: "smooth" });
-                            }}
+                            onClick={() => viewSavedResult(item)}
                           >
                             View saved result
                           </button>
@@ -440,10 +616,12 @@ function App() {
                   <div className="section-heading">
                     <div>
                       <h3>Analysis results</h3>
-                      <p>Results returned by the LexProof AI backend.</p>
+                      <p>
+                        Results returned by the LexProof AI backend.
+                      </p>
                     </div>
                     <span className="step-badge">
-                      {analysis.page_count
+                      {analysis.page_count != null
                         ? `PDF · ${analysis.page_count} PAGE${analysis.page_count === 1 ? "" : "S"}`
                         : "TEXT SCAN"}
                     </span>
@@ -451,16 +629,28 @@ function App() {
 
                   <div className="panel result-summary">
                     {analysis.document_name && (
-                      <p><strong>File:</strong> {analysis.document_name}</p>
+                      <p>
+                        <strong>File:</strong> {analysis.document_name}
+                      </p>
                     )}
+
                     {analysis.page_count != null && (
-                      <p><strong>Pages processed:</strong> {analysis.page_count}</p>
+                      <p>
+                        <strong>Pages processed:</strong>{" "}
+                        {analysis.page_count}
+                      </p>
                     )}
+
                     {analysis.created_at && (
-                      <p><strong>Saved on:</strong> {new Date(analysis.created_at).toLocaleString()}</p>
+                      <p>
+                        <strong>Saved on:</strong>{" "}
+                        {new Date(analysis.created_at).toLocaleString()}
+                      </p>
                     )}
+
                     <h3>Document summary</h3>
                     <p>{analysis.document_summary}</p>
+
                     <div className="result-metrics">
                       <div>
                         <span>Words</span>
@@ -483,7 +673,9 @@ function App() {
                       This fingerprint can help check whether text matches a
                       later copy. It is not yet registered on a blockchain.
                     </p>
-                    <code className="hash-value">{analysis.sha256}</code>
+                    <code className="hash-value">
+                      {analysis.sha256}
+                    </code>
                     <button
                       type="button"
                       className="secondary-button"
@@ -499,12 +691,16 @@ function App() {
                     {!analysis.flags?.length ? (
                       <p>
                         No matching topics were detected by this preliminary
-                        keyword scan. This does not mean the document is risk-free.
+                        keyword scan. This does not mean the document is
+                        risk-free.
                       </p>
                     ) : (
                       <div className="flag-list">
                         {analysis.flags.map((flag, index) => (
-                          <div className="flag-item" key={`${flag.category}-${index}`}>
+                          <div
+                            className="flag-item"
+                            key={`${flag.category}-${index}`}
+                          >
                             <div className="flag-heading">
                               <strong>{flag.category}</strong>
                               <span>
@@ -539,6 +735,7 @@ function App() {
                     <p>A clear path from contract to verifiable record.</p>
                   </div>
                 </div>
+
                 <div className="workflow-grid">
                   <div className="workflow-card">
                     <div className="workflow-number">01</div>
@@ -549,7 +746,9 @@ function App() {
                       that may need review.
                     </p>
                   </div>
+
                   <div className="workflow-connector">→</div>
+
                   <div className="workflow-card">
                     <div className="workflow-number">02</div>
                     <div className="workflow-symbol purple-symbol">⌕</div>
@@ -559,7 +758,9 @@ function App() {
                       with a lawyer.
                     </p>
                   </div>
+
                   <div className="workflow-connector">→</div>
+
                   <div className="workflow-card">
                     <div className="workflow-number">03</div>
                     <div className="workflow-symbol green-symbol">⬡</div>
@@ -589,6 +790,7 @@ function App() {
               </p>
               <span className="step-badge">IN DEVELOPMENT</span>
               <button
+                type="button"
                 className="secondary-button"
                 onClick={() => setActiveTab("overview")}
               >
@@ -598,7 +800,9 @@ function App() {
           )}
 
           <footer className="footer">
-            <span>LexProof AI · Legal intelligence, with transparency.</span>
+            <span>
+              LexProof AI · Legal intelligence, with transparency.
+            </span>
             <span>Prototype · Not legal advice</span>
           </footer>
         </div>
