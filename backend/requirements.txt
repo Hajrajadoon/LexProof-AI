@@ -4,3 +4,4 @@ python-multipart
 pypdf
 SQLAlchemy>=2.0
 psycopg2-binary
+psycopg[binary]
