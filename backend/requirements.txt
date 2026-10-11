@@ -6,3 +6,4 @@ SQLAlchemy>=2.0
 psycopg2-binary
 google-genai
 python-dotenv
+psycopg[binary]
