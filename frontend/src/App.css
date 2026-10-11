@@ -1043,3 +1043,43 @@ transition-duration: .01ms !important;
     flex-direction: column;
   }
 }
+/* Append these styles to the end of frontend/src/App.css. */
+.ai-status-pill,
+.severity-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.ai-status-completed { color: #087443; background: #e4f7ed; }
+.ai-status-unavailable { color: #9a3412; background: #fff0e5; }
+.ai-status-not-run { color: #596579; background: #edf0f5; }
+.severity-critical,
+.severity-high { color: #a51d2d; background: #ffeaec; }
+.severity-medium { color: #92500a; background: #fff3d8; }
+.severity-low,
+.severity-info,
+.severity-informational { color: #176342; background: #e4f7ed; }
+.severity-unknown { color: #596579; background: #edf0f5; }
+.ai-report-panel { margin-top: 16px; }
+.ai-list { margin: 8px 0 0; padding-left: 24px; }
+.ai-list li { margin: 0 0 10px; line-height: 1.65; padding-left: 3px; }
+.ai-risk-list { display: grid; gap: 14px; margin-top: 12px; }
+.ai-risk-item { border: 1px solid var(--border-color, #e5e7eb); border-radius: 12px; padding: 16px; }
+.ai-risk-item h4 { margin: 0; font-size: 1rem; }
+.ai-risk-item > p { line-height: 1.65; }
+.evidence-quote { margin: 12px 0; padding: 12px 14px; border-left: 3px solid #7c6ce7; background: var(--surface-muted, #f7f7fb); border-radius: 0 8px 8px 0; line-height: 1.6; }
+.evidence-quote strong { display: block; margin-bottom: 4px; font-size: 0.82rem; }
+.recommendation-note { padding: 12px 14px; background: var(--surface-muted, #f5f8ff); border-radius: 8px; line-height: 1.6; }
+.muted-note { margin-top: 14px; color: #6b7280; font-size: 0.9rem; line-height: 1.6; }
+@media (max-width: 640px) {
+  .ai-status-pill { margin-top: 8px; }
+  .ai-risk-item { padding: 12px; }
+  .flag-heading { gap: 10px; flex-wrap: wrap; }
+}

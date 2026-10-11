@@ -1,10 +1,132 @@
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 
 const API_URL = (
   import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
-).replace(/\/$/, "");
+).replace(/\/+$/, "");
+
+function formatDate(value) {
+  if (!value) return "Not available";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "Not available"
+    : date.toLocaleString();
+}
+
+function severityLabel(severity) {
+  const normalized = String(severity || "unknown").toLowerCase();
+
+  return [
+    "critical",
+    "high",
+    "medium",
+    "low",
+    "info",
+    "informational",
+  ].includes(normalized)
+    ? normalized
+    : "unknown";
+}
+
+function parseJsonIfNeeded(value) {
+  if (typeof value !== "string") return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+// Supports both the local Gemini API and the older history API format.
+function normalizeAnalysis(record = {}) {
+  const aiReport = parseJsonIfNeeded(record.ai_report);
+  const analysisType = String(record.analysis_type || "").toLowerCase();
+
+  const status =
+    record.ai_status ||
+    (aiReport && typeof aiReport === "object"
+      ? "completed"
+      : analysisType.includes("gemini")
+        ? "completed"
+        : "not_run");
+
+  const rawFlags = record.flags ?? record.keyword_findings ?? [];
+
+  const flags = Array.isArray(rawFlags)
+    ? rawFlags.map((flag) => {
+        if (typeof flag === "string") {
+          return {
+            category: flag,
+            occurrences: 1,
+            note: "This topic may deserve review.",
+          };
+        }
+
+        return {
+          ...flag,
+          category: flag.category || flag.title || "Review topic",
+          occurrences: Number(flag.occurrences ?? flag.count ?? 1),
+          note: flag.note || flag.description || "This topic may deserve review.",
+        };
+      })
+    : [];
+
+  return {
+    ...record,
+    filename:
+      record.filename ||
+      record.document_name ||
+      record.file_name ||
+      "Pasted text",
+    document_name:
+      record.document_name ||
+      record.filename ||
+      record.file_name ||
+      "Pasted text",
+    document_summary:
+      record.document_summary ||
+      record.summary ||
+      aiReport?.summary ||
+      "",
+    character_count:
+      record.character_count ??
+      record.characterCount ??
+      record.characters ??
+      0,
+    word_count: record.word_count ?? record.wordCount ?? 0,
+    sha256: record.sha256 || record.file_hash || "",
+    file_hash: record.file_hash || record.sha256 || "",
+    page_count: record.page_count ?? null,
+    flags,
+    ai_report:
+      aiReport && typeof aiReport === "object" && !Array.isArray(aiReport)
+        ? aiReport
+        : null,
+    ai_status: status,
+    analysis_type: record.analysis_type || "preliminary_keyword_scan",
+  };
+}
+
+function getObligationText(item) {
+  if (typeof item === "string" || typeof item === "number") {
+    return String(item);
+  }
+
+  if (!item || typeof item !== "object") {
+    return "Obligation details unavailable";
+  }
+
+  return (
+    item.obligation ||
+    item.description ||
+    item.text ||
+    item.requirement ||
+    item.title ||
+    "Obligation details unavailable"
+  );
+}
 
 function App() {
   const fileInput = useRef(null);
@@ -20,25 +142,17 @@ function App() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
 
-  // Load saved analyses and update the history UI.
-  async function loadHistory(showNotice = false) {
+  const loadHistory = useCallback(async (showNotice = false) => {
     setHistoryLoading(true);
     setHistoryError("");
 
     try {
-      const response = await fetch(
-        `${API_URL}/api/analyses?limit=20`,
-        {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-          },
-          cache: "no-store",
-        }
-      );
+      const response = await fetch(`${API_URL}/api/analyses?limit=20`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
 
-      // Read the body as text first so empty or invalid responses
-      // produce a useful error instead of failing silently.
       const responseText = await response.text();
 
       if (!response.ok) {
@@ -49,9 +163,7 @@ function App() {
       }
 
       if (!responseText.trim()) {
-        throw new Error(
-          "The history API returned an empty response. Check the backend."
-        );
+        throw new Error("The history API returned an empty response.");
       }
 
       let data;
@@ -59,12 +171,9 @@ function App() {
       try {
         data = JSON.parse(responseText);
       } catch {
-        throw new Error(
-          "The history API did not return valid JSON. Check the backend response."
-        );
+        throw new Error("The history API did not return valid JSON.");
       }
 
-      // Accept the common API response formats.
       const records = Array.isArray(data)
         ? data
         : Array.isArray(data?.analyses)
@@ -81,21 +190,23 @@ function App() {
         );
       }
 
-      setAnalysisHistory(records);
+      const normalizedRecords = records.map(normalizeAnalysis);
+
+      setAnalysisHistory(normalizedRecords);
 
       const returnedCount = Number(
-        data?.total_count ?? data?.count ?? records.length
+        data?.total_count ?? data?.count ?? normalizedRecords.length
       );
 
       setAnalysisCount(
         Number.isFinite(returnedCount) && returnedCount >= 0
           ? returnedCount
-          : records.length
+          : normalizedRecords.length
       );
 
       if (showNotice) {
         setNotice(
-          `History refreshed successfully. ${records.length} record(s) loaded.`
+          `History refreshed successfully. ${normalizedRecords.length} record(s) loaded.`
         );
       }
     } catch (error) {
@@ -112,11 +223,11 @@ function App() {
     } finally {
       setHistoryLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     loadHistory();
-  }, []);
+  }, [loadHistory]);
 
   function handleFileChange(event) {
     const selectedFile = event.target.files?.[0];
@@ -141,9 +252,7 @@ function App() {
 
     setFile(selectedFile);
     setAnalysis(null);
-    setNotice(
-      "PDF selected. Click Prepare analysis to extract and analyze its text."
-    );
+    setNotice("PDF selected. Click Analyze document to analyze its contents.");
   }
 
   async function handleAnalyze() {
@@ -180,7 +289,16 @@ function App() {
         });
       }
 
-      const data = await response.json();
+      const responseText = await response.text();
+      let data;
+
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        throw new Error(
+          `The backend returned an invalid response (HTTP ${response.status}).`
+        );
+      }
 
       if (!response.ok) {
         let message = "The document could not be analyzed.";
@@ -196,30 +314,34 @@ function App() {
         throw new Error(message);
       }
 
-      setAnalysis(data);
+      const normalized = normalizeAnalysis(data);
 
-      // Refresh saved history after a successful analysis.
+      // Display the actual analysis response, including its AI report.
+      setAnalysis(normalized);
+
+      // Refresh history separately so a history error doesn't erase the report.
       await loadHistory();
 
-      setNotice(
-        file
-          ? `PDF extracted successfully: ${data.page_count} page(s) processed.${
-              data.saved_to_database
-                ? " Result saved to database."
-                : ""
-            }`
-          : `Analysis completed successfully.${
-              data.saved_to_database
-                ? " Result saved to database."
-                : ""
-            }`
-      );
+      if (normalized.ai_report && normalized.ai_status === "completed") {
+        setNotice(
+          `${file ? "PDF" : "Text"} analysis completed. Gemini AI report is ready.` +
+            (data.saved_to_database ? " Result saved to database." : "")
+        );
+      } else if (normalized.ai_status === "unavailable") {
+        setNotice(
+          "Analysis finished, but AI was unavailable. Review the keyword scan below."
+        );
+      } else {
+        setNotice(
+          "The document was processed, but the response contains no AI report. Check the backend response and server logs."
+        );
+      }
     } catch (error) {
       console.error("LexProof document analysis failed:", error);
 
       setNotice(
         error.message === "Failed to fetch"
-          ? `Cannot reach the backend at ${API_URL}. Check your connection and backend URL.`
+          ? `Cannot reach the backend at ${API_URL}. Check your backend and frontend configuration.`
           : `Analysis failed: ${error.message}`
       );
     } finally {
@@ -228,15 +350,15 @@ function App() {
   }
 
   async function copyHash() {
-    if (!analysis?.sha256) return;
+    const hash = analysis?.sha256 || analysis?.file_hash;
+
+    if (!hash) return;
 
     try {
-      await navigator.clipboard.writeText(analysis.sha256);
+      await navigator.clipboard.writeText(hash);
       setNotice("SHA-256 hash copied to clipboard.");
     } catch {
-      setNotice(
-        "Unable to copy automatically. Select and copy the hash manually."
-      );
+      setNotice("Unable to copy automatically. Select and copy the hash manually.");
     }
   }
 
@@ -252,10 +374,14 @@ function App() {
   }
 
   function viewSavedResult(item) {
-    setAnalysis(item);
+    setAnalysis(normalizeAnalysis(item));
     setNotice(`Loaded saved analysis #${item.id}.`);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
+
+  const aiReport = analysis?.ai_report || null;
+  const aiStatus = analysis?.ai_status || "not_run";
+  const isAiComplete = aiStatus === "completed" && Boolean(aiReport);
 
   return (
     <div className="app-shell">
@@ -274,38 +400,27 @@ function App() {
 
         <nav className="navigation">
           <button
-            className={
-              activeTab === "overview" ? "nav-item active" : "nav-item"
-            }
+            className={activeTab === "overview" ? "nav-item active" : "nav-item"}
             onClick={() => setActiveTab("overview")}
           >
             <span>▦</span> Overview
           </button>
-
           <button
-            className={
-              activeTab === "documents" ? "nav-item active" : "nav-item"
-            }
+            className={activeTab === "documents" ? "nav-item active" : "nav-item"}
             onClick={() => setActiveTab("documents")}
           >
             <span>▤</span> Documents
           </button>
-
           <button
             className={
-              activeTab === "verification"
-                ? "nav-item active"
-                : "nav-item"
+              activeTab === "verification" ? "nav-item active" : "nav-item"
             }
             onClick={() => setActiveTab("verification")}
           >
             <span>⬡</span> Blockchain Verification
           </button>
-
           <button
-            className={
-              activeTab === "reports" ? "nav-item active" : "nav-item"
-            }
+            className={activeTab === "reports" ? "nav-item active" : "nav-item"}
             onClick={() => setActiveTab("reports")}
           >
             <span>▧</span> Reports
@@ -385,19 +500,17 @@ function App() {
                     <span>Documents selected</span>
                     <span className="stat-icon blue">▤</span>
                   </div>
-                  <div className="stat-value">
-                    {file ? "01" : "00"}
-                  </div>
+                  <div className="stat-value">{file ? "01" : "00"}</div>
                   <div className="stat-foot">In this session</div>
                 </div>
 
                 <div className="stat-card">
                   <div className="stat-top">
-                    <span>Text analyses</span>
+                    <span>Saved analyses</span>
                     <span className="stat-icon purple">✧</span>
                   </div>
                   <div className="stat-value">{analysisCount}</div>
-                  <div className="stat-foot">Saved analyses</div>
+                  <div className="stat-foot">Retrieved from database</div>
                 </div>
 
                 <div className="stat-card">
@@ -406,9 +519,7 @@ function App() {
                     <span className="stat-icon green">⬡</span>
                   </div>
                   <div className="stat-value">0</div>
-                  <div className="stat-foot">
-                    Blockchain integration pending
-                  </div>
+                  <div className="stat-foot">Blockchain integration pending</div>
                 </div>
               </section>
 
@@ -436,9 +547,7 @@ function App() {
                     onClick={() => fileInput.current?.click()}
                   >
                     <div className="upload-illustration">↑</div>
-                    <strong>
-                      {file ? file.name : "Click to select a PDF"}
-                    </strong>
+                    <strong>{file ? file.name : "Click to select a PDF"}</strong>
                     <span>
                       {file
                         ? `${(file.size / 1024 / 1024).toFixed(2)} MB · Selected`
@@ -458,8 +567,7 @@ function App() {
                   />
 
                   <div className="privacy-note">
-                    <span>▣</span> Do not upload sensitive documents to this
-                    demo.
+                    <span>▣</span> Do not upload sensitive documents to this demo.
                   </div>
                 </div>
 
@@ -468,7 +576,7 @@ function App() {
                     <div className="panel-icon purple-icon">Aa</div>
                     <div>
                       <h3>Paste contract text</h3>
-                      <p>Send text to the connected backend</p>
+                      <p>Analyze with the connected Gemini AI backend</p>
                     </div>
                   </div>
 
@@ -497,8 +605,8 @@ function App() {
                 <div className="action-explanation">
                   <span className="action-lock">⌑</span>
                   <span>
-                    Connected to the preliminary text-analysis API. AI model
-                    and blockchain integration are still pending.
+                    AI-powered contract analysis is connected. Blockchain
+                    registration is still in development.
                   </span>
                 </div>
 
@@ -508,7 +616,7 @@ function App() {
                   onClick={handleAnalyze}
                   disabled={loading}
                 >
-                  {loading ? "Analyzing..." : "Prepare analysis"}{" "}
+                  {loading ? "Analyzing..." : "Analyze document"}{" "}
                   <span>{loading ? "…" : "→"}</span>
                 </button>
               </section>
@@ -523,9 +631,7 @@ function App() {
                 <div className="section-heading">
                   <div>
                     <h3>Saved analysis history</h3>
-                    <p>
-                      Recent results retrieved from the connected backend.
-                    </p>
+                    <p>Recent results retrieved from the connected backend.</p>
                   </div>
 
                   <button
@@ -542,9 +648,6 @@ function App() {
                   <div className="notice" role="alert">
                     <strong>History could not be loaded.</strong>
                     <p>{historyError}</p>
-                    <p>
-                      Check the browser Console and the backend response.
-                    </p>
                     <button
                       type="button"
                       className="secondary-button"
@@ -564,7 +667,7 @@ function App() {
                   <div className="panel flags-panel">
                     <p>
                       {historyError
-                        ? "History is unavailable until the error above is resolved."
+                        ? "History is unavailable until the error is resolved."
                         : "No saved analyses found. Analyze a PDF or paste text to create your first record."}
                     </p>
                   </div>
@@ -577,24 +680,21 @@ function App() {
                           key={item.id ?? `${item.document_name}-${index}`}
                         >
                           <div className="flag-heading">
-                            <strong>
-                              {item.document_name || "Pasted text"}
-                            </strong>
+                            <strong>{item.document_name}</strong>
                             <span>
-                              {item.source_type === "pdf"
-                                ? `PDF · ${item.page_count ?? "?"} pages`
-                                : "Text scan"}
+                              {item.ai_status === "completed" && item.ai_report
+                                ? "AI report ready"
+                                : item.ai_status === "unavailable"
+                                  ? "AI unavailable"
+                                  : item.page_count != null
+                                    ? `PDF · ${item.page_count} pages`
+                                    : "Keyword scan"}
                             </span>
                           </div>
 
                           <p>
-                            {item.created_at
-                              ? new Date(item.created_at).toLocaleString()
-                              : "Saved analysis"}
-                            {" · "}
-                            {item.word_count ?? 0} words
-                            {" · "}
-                            {item.flags?.length ?? 0} topics flagged
+                            {formatDate(item.created_at)} · {item.word_count}{" "}
+                            words · {item.flags.length} topics flagged
                           </p>
 
                           <button
@@ -617,39 +717,65 @@ function App() {
                     <div>
                       <h3>Analysis results</h3>
                       <p>
-                        Results returned by the LexProof AI backend.
+                        Review the AI report and document integrity information.
                       </p>
                     </div>
                     <span className="step-badge">
                       {analysis.page_count != null
                         ? `PDF · ${analysis.page_count} PAGE${analysis.page_count === 1 ? "" : "S"}`
-                        : "TEXT SCAN"}
+                        : "TEXT ANALYSIS"}
                     </span>
                   </div>
 
                   <div className="panel result-summary">
-                    {analysis.document_name && (
-                      <p>
-                        <strong>File:</strong> {analysis.document_name}
-                      </p>
-                    )}
+                    <div className="flag-heading">
+                      <h3>Document overview</h3>
+                      <span
+                        className={`ai-status-pill ${
+                          isAiComplete
+                            ? "ai-status-completed"
+                            : aiStatus === "unavailable"
+                              ? "ai-status-unavailable"
+                              : "ai-status-not-run"
+                        }`}
+                      >
+                        {isAiComplete
+                          ? "Gemini AI completed"
+                          : aiStatus === "unavailable"
+                            ? "AI unavailable"
+                            : "AI report not available"}
+                      </span>
+                    </div>
+
+                    <p>
+                      <strong>File:</strong>{" "}
+                      {analysis.document_name || analysis.filename}
+                    </p>
 
                     {analysis.page_count != null && (
                       <p>
-                        <strong>Pages processed:</strong>{" "}
-                        {analysis.page_count}
+                        <strong>Pages processed:</strong> {analysis.page_count}
                       </p>
                     )}
 
                     {analysis.created_at && (
                       <p>
-                        <strong>Saved on:</strong>{" "}
-                        {new Date(analysis.created_at).toLocaleString()}
+                        <strong>Saved on:</strong> {formatDate(analysis.created_at)}
                       </p>
                     )}
 
-                    <h3>Document summary</h3>
-                    <p>{analysis.document_summary}</p>
+                    {aiReport?.document_type && (
+                      <p>
+                        <strong>Document type:</strong> {aiReport.document_type}
+                      </p>
+                    )}
+
+                    <h3>{isAiComplete ? "AI-generated summary" : "Document summary"}</h3>
+                    <p>
+                      {aiReport?.summary ||
+                        analysis.document_summary ||
+                        "No summary is available for this record."}
+                    </p>
 
                     <div className="result-metrics">
                       <div>
@@ -662,10 +788,163 @@ function App() {
                       </div>
                       <div>
                         <span>Topics flagged</span>
-                        <strong>{analysis.flags?.length ?? 0}</strong>
+                        <strong>{analysis.flags.length}</strong>
                       </div>
                     </div>
+
+                    {!isAiComplete && (
+                      <p className="muted-note">
+                        This record has no usable AI report. It may have been
+                        created by the keyword-only analyzer, or AI analysis
+                        may have been unavailable. Run the analysis again after
+                        confirming that the Gemini-enabled backend is connected.
+                      </p>
+                    )}
                   </div>
+
+                  {isAiComplete && (
+                    <>
+                      <div className="panel ai-report-panel">
+                        <div className="panel-heading">
+                          <div className="panel-icon purple-icon">✓</div>
+                          <div>
+                            <h3>Key obligations</h3>
+                            <p>Responsibilities identified in the document</p>
+                          </div>
+                        </div>
+
+                        {Array.isArray(aiReport.key_obligations) &&
+                        aiReport.key_obligations.length > 0 ? (
+                          <ul className="ai-list">
+                            {aiReport.key_obligations.map((item, index) => (
+                              <li key={`obligation-${index}`}>
+                                {typeof item === "object" && item !== null ? (
+                                  <>
+                                    {item.party && (
+                                      <strong>{item.party}: </strong>
+                                    )}
+                                    {getObligationText(item)}
+                                    {item.evidence && (
+                                      <p>
+                                        <em>Evidence: {item.evidence}</em>
+                                      </p>
+                                    )}
+                                  </>
+                                ) : (
+                                  getObligationText(item)
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p>No key obligations were returned in this report.</p>
+                        )}
+                      </div>
+
+                      <div className="panel ai-report-panel">
+                        <div className="panel-heading">
+                          <div className="panel-icon">!</div>
+                          <div>
+                            <h3>AI risk findings</h3>
+                            <p>
+                              Potential concerns to review; severity is an AI
+                              assessment, not a legal conclusion.
+                            </p>
+                          </div>
+                        </div>
+
+                        {!Array.isArray(aiReport.risk_findings) ||
+                        aiReport.risk_findings.length === 0 ? (
+                          <p>
+                            No specific risk findings were returned by the AI.
+                            This does not guarantee that the document is risk-free.
+                          </p>
+                        ) : (
+                          <div className="ai-risk-list">
+                            {aiReport.risk_findings.map((finding, index) => {
+                              const title =
+                                finding.category ||
+                                finding.title ||
+                                finding.type ||
+                                "Potential concern";
+
+                              return (
+                                <article
+                                  className="ai-risk-item"
+                                  key={`risk-${index}`}
+                                >
+                                  <div className="flag-heading">
+                                    <h4>{title}</h4>
+                                    <span
+                                      className={`severity-pill severity-${severityLabel(
+                                        finding.severity
+                                      )}`}
+                                    >
+                                      {String(
+                                        finding.severity || "Unrated"
+                                      ).toUpperCase()}
+                                    </span>
+                                  </div>
+
+                                  {finding.explanation && (
+                                    <p>{finding.explanation}</p>
+                                  )}
+
+                                  {finding.evidence && (
+                                    <blockquote className="evidence-quote">
+                                      <strong>Evidence from document</strong>
+                                      <br />
+                                      “{finding.evidence}”
+                                    </blockquote>
+                                  )}
+
+                                  {finding.recommendation && (
+                                    <div className="recommendation-note">
+                                      <strong>Suggested review:</strong>{" "}
+                                      {finding.recommendation}
+                                    </div>
+                                  )}
+                                </article>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="panel ai-report-panel">
+                        <div className="panel-heading">
+                          <div className="panel-icon purple-icon">?</div>
+                          <div>
+                            <h3>Questions for a lawyer</h3>
+                            <p>
+                              Questions to help guide a professional review
+                            </p>
+                          </div>
+                        </div>
+
+                        {Array.isArray(aiReport.questions_for_lawyer) &&
+                        aiReport.questions_for_lawyer.length > 0 ? (
+                          <ol className="ai-list ordered-list">
+                            {aiReport.questions_for_lawyer.map(
+                              (question, index) => (
+                                <li key={`question-${index}`}>
+                                  {typeof question === "string"
+                                    ? question
+                                    : question?.question ||
+                                      question?.text ||
+                                      "Question details unavailable"}
+                                </li>
+                              )
+                            )}
+                          </ol>
+                        ) : (
+                          <p>
+                            No lawyer questions were returned in this report.
+                          </p>
+                        )}
+                      </div>
+                    </>
+                  )}
 
                   <div className="panel hash-panel">
                     <h3>SHA-256 document hash</h3>
@@ -674,12 +953,13 @@ function App() {
                       later copy. It is not yet registered on a blockchain.
                     </p>
                     <code className="hash-value">
-                      {analysis.sha256}
+                      {analysis.sha256 || analysis.file_hash || "Hash not available"}
                     </code>
                     <button
                       type="button"
                       className="secondary-button"
                       onClick={copyHash}
+                      disabled={!analysis.sha256 && !analysis.file_hash}
                     >
                       Copy hash
                     </button>
@@ -688,11 +968,10 @@ function App() {
                   <div className="panel flags-panel">
                     <h3>Potential review topics</h3>
 
-                    {!analysis.flags?.length ? (
+                    {!analysis.flags.length ? (
                       <p>
-                        No matching topics were detected by this preliminary
-                        keyword scan. This does not mean the document is
-                        risk-free.
+                        No matching topics were detected by the keyword scan.
+                        This does not mean the document is risk-free.
                       </p>
                     ) : (
                       <div className="flag-list">
@@ -718,11 +997,12 @@ function App() {
                   <div className="disclaimer">
                     <span>ⓘ</span>
                     <p>
-                      <strong>Important:</strong> This is a preliminary
-                      keyword scan, not AI legal advice. A detected topic is
-                      not necessarily risky, and this scan may miss important
-                      clauses. The hash does not establish authorship, legal
-                      validity, or enforceability.
+                      <strong>Important:</strong> AI-generated findings are
+                      informational, may be incomplete or incorrect, and are
+                      not legal advice. Review the original contract and consult
+                      a qualified lawyer before making decisions. A hash alone
+                      does not establish authorship, legal validity, or
+                      enforceability.
                     </p>
                   </div>
                 </section>
@@ -746,21 +1026,17 @@ function App() {
                       that may need review.
                     </p>
                   </div>
-
                   <div className="workflow-connector">→</div>
-
                   <div className="workflow-card">
                     <div className="workflow-number">02</div>
                     <div className="workflow-symbol purple-symbol">⌕</div>
                     <h4>Review</h4>
                     <p>
-                      Explore potential concerns and questions to discuss
-                      with a lawyer.
+                      Explore potential concerns and questions to discuss with
+                      a lawyer.
                     </p>
                   </div>
-
                   <div className="workflow-connector">→</div>
-
                   <div className="workflow-card">
                     <div className="workflow-number">03</div>
                     <div className="workflow-symbol green-symbol">⬡</div>
@@ -800,9 +1076,7 @@ function App() {
           )}
 
           <footer className="footer">
-            <span>
-              LexProof AI · Legal intelligence, with transparency.
-            </span>
+            <span>LexProof AI · Legal intelligence, with transparency.</span>
             <span>Prototype · Not legal advice</span>
           </footer>
         </div>
