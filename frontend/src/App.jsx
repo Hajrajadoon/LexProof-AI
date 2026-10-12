@@ -1,5 +1,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { generateReport } from "./generateReport";
 import "./App.css";
 
 const API_URL = (
@@ -39,7 +40,6 @@ function parseJsonIfNeeded(value) {
   }
 }
 
-// Supports both the local Gemini API and the older history API format.
 function normalizeAnalysis(record = {}) {
   const aiReport = parseJsonIfNeeded(record.ai_report);
   const analysisType = String(record.analysis_type || "").toLowerCase();
@@ -68,7 +68,10 @@ function normalizeAnalysis(record = {}) {
           ...flag,
           category: flag.category || flag.title || "Review topic",
           occurrences: Number(flag.occurrences ?? flag.count ?? 1),
-          note: flag.note || flag.description || "This topic may deserve review.",
+          note:
+            flag.note ||
+            flag.description ||
+            "This topic may deserve review.",
         };
       })
     : [];
@@ -315,11 +318,8 @@ function App() {
       }
 
       const normalized = normalizeAnalysis(data);
-
-      // Display the actual analysis response, including its AI report.
       setAnalysis(normalized);
 
-      // Refresh history separately so a history error doesn't erase the report.
       await loadHistory();
 
       if (normalized.ai_report && normalized.ai_status === "completed") {
@@ -358,7 +358,28 @@ function App() {
       await navigator.clipboard.writeText(hash);
       setNotice("SHA-256 hash copied to clipboard.");
     } catch {
-      setNotice("Unable to copy automatically. Select and copy the hash manually.");
+      setNotice(
+        "Unable to copy automatically. Select and copy the hash manually."
+      );
+    }
+  }
+
+  function handleDownloadReport() {
+    if (!analysis) {
+      setNotice("Analyze a document or load a saved result before creating a report.");
+      return;
+    }
+
+    try {
+      generateReport(analysis);
+      setNotice("PDF report generated. Check your browser downloads.");
+    } catch (error) {
+      console.error("LexProof PDF report generation failed:", error);
+      setNotice(
+        `Could not generate the PDF report: ${
+          error instanceof Error ? error.message : "Unknown error."
+        }`
+      );
     }
   }
 
@@ -405,12 +426,14 @@ function App() {
           >
             <span>▦</span> Overview
           </button>
+
           <button
             className={activeTab === "documents" ? "nav-item active" : "nav-item"}
             onClick={() => setActiveTab("documents")}
           >
             <span>▤</span> Documents
           </button>
+
           <button
             className={
               activeTab === "verification" ? "nav-item active" : "nav-item"
@@ -419,6 +442,7 @@ function App() {
           >
             <span>⬡</span> Blockchain Verification
           </button>
+
           <button
             className={activeTab === "reports" ? "nav-item active" : "nav-item"}
             onClick={() => setActiveTab("reports")}
@@ -1026,7 +1050,9 @@ function App() {
                       that may need review.
                     </p>
                   </div>
+
                   <div className="workflow-connector">→</div>
+
                   <div className="workflow-card">
                     <div className="workflow-number">02</div>
                     <div className="workflow-symbol purple-symbol">⌕</div>
@@ -1036,7 +1062,9 @@ function App() {
                       a lawyer.
                     </p>
                   </div>
+
                   <div className="workflow-connector">→</div>
+
                   <div className="workflow-card">
                     <div className="workflow-number">03</div>
                     <div className="workflow-symbol green-symbol">⬡</div>
@@ -1049,20 +1077,61 @@ function App() {
                 </div>
               </section>
             </>
+          ) : activeTab === "reports" ? (
+            <section className="panel">
+              <div className="panel-heading">
+                <div className="panel-icon purple-icon">▧</div>
+                <div>
+                  <h3>Document reports</h3>
+                  <p>Generate a downloadable PDF from your analysis results.</p>
+                </div>
+              </div>
+
+              {analysis ? (
+                <>
+                  <p>
+                    <strong>Document:</strong>{" "}
+                    {analysis.document_name ||
+                      analysis.filename ||
+                      "Untitled document"}
+                  </p>
+
+                  <p>
+                    The report includes the available summary, obligations,
+                    risk findings, questions for a lawyer, and SHA-256 hash.
+                  </p>
+
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={handleDownloadReport}
+                  >
+                    Download PDF report <span>↓</span>
+                  </button>
+                </>
+              ) : (
+                <p>
+                  No analysis is selected yet. Return to Overview and run an
+                  analysis, or select a saved result from the history, then
+                  return here to download its report.
+                </p>
+              )}
+
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setActiveTab("overview")}
+              >
+                Back to overview
+              </button>
+            </section>
           ) : (
             <section className="panel coming-soon">
-              <div className="coming-icon">
-                {activeTab === "verification" ? "⬡" : "▧"}
-              </div>
-              <h3>
-                {activeTab === "verification"
-                  ? "Blockchain verification"
-                  : "Document reports"}
-              </h3>
+              <div className="coming-icon">⬡</div>
+              <h3>Blockchain verification</h3>
               <p>
-                {activeTab === "verification"
-                  ? "On-chain hash registration and verification will be added after the smart contract is implemented."
-                  : "Downloadable reports will be added after report generation is implemented."}
+                On-chain hash registration and verification will be added
+                after the dedicated smart contract is implemented.
               </p>
               <span className="step-badge">IN DEVELOPMENT</span>
               <button
@@ -1073,6 +1142,12 @@ function App() {
                 Back to overview
               </button>
             </section>
+          )}
+
+          {notice && activeTab !== "overview" && activeTab !== "documents" && (
+            <div className="notice" role="status">
+              {notice}
+            </div>
           )}
 
           <footer className="footer">
