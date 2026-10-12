@@ -1,6 +1,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { generateReport } from "./generateReport";
+import {
+  connectCasperWallet,
+  disconnectCasperWallet,
+} from "./casperWallet";
 import "./App.css";
 
 const API_URL = (
@@ -144,6 +148,47 @@ function App() {
   const [analysisHistory, setAnalysisHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
+  const [walletPublicKey, setWalletPublicKey] = useState("");
+const [walletLoading, setWalletLoading] = useState(false);
+const [walletError, setWalletError] = useState("");
+
+const handleConnectWallet = async () => {
+  setWalletLoading(true);
+  setWalletError("");
+
+  try {
+    const { publicKey } = await connectCasperWallet();
+    setWalletPublicKey(publicKey);
+    setNotice("Casper Wallet connected successfully.");
+  } catch (error) {
+    setWalletError(
+      error instanceof Error
+        ? error.message
+        : "Could not connect to Casper Wallet."
+    );
+  } finally {
+    setWalletLoading(false);
+  }
+};
+
+const handleDisconnectWallet = async () => {
+  setWalletLoading(true);
+  setWalletError("");
+
+  try {
+    await disconnectCasperWallet();
+    setWalletPublicKey("");
+    setNotice("Casper Wallet disconnected.");
+  } catch (error) {
+    setWalletError(
+      error instanceof Error
+        ? error.message
+        : "Could not disconnect Casper Wallet."
+    );
+  } finally {
+    setWalletLoading(false);
+  }
+};
 
   const loadHistory = useCallback(async (showNotice = false) => {
     setHistoryLoading(true);
@@ -481,12 +526,49 @@ function App() {
                   : "Reports"}
           </div>
 
-          <div className="topbar-right">
-            <span className="network-badge">
-              <span className="status-dot" /> Local preview
-            </span>
-            <div className="avatar">LP</div>
-          </div>
+<div className="topbar-right">
+  <span className="network-badge">
+    <span className="status-dot" /> Local preview
+  </span>
+
+  {walletPublicKey ? (
+    <>
+      <span
+        className="wallet-key"
+        title={walletPublicKey}
+      >
+        {walletPublicKey.slice(0, 10)}...
+        {walletPublicKey.slice(-6)}
+      </span>
+
+      <button
+        type="button"
+        className="secondary-button wallet-button"
+        onClick={handleDisconnectWallet}
+        disabled={walletLoading}
+      >
+        {walletLoading ? "Please wait..." : "Disconnect"}
+      </button>
+    </>
+  ) : (
+    <button
+      type="button"
+      className="primary-button wallet-button"
+      onClick={handleConnectWallet}
+      disabled={walletLoading}
+    >
+      {walletLoading ? "Connecting..." : "Connect Casper Wallet"}
+    </button>
+  )}
+
+  <div className="avatar">LP</div>
+
+  {walletError && (
+    <span className="wallet-error" role="alert">
+      {walletError}
+    </span>
+  )}
+</div>
         </header>
 
         <div className="page-content">

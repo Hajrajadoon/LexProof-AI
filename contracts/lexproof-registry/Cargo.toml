@@ -1,0 +1,16 @@
+[package]
+name = "lexproof-registry"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+casper-contract = "=4.0.0"
+casper-types = "=4.0.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"

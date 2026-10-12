@@ -29,3 +29,7 @@ coverage/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Rust / Casper contract build artifacts
+contracts/lexproof-registry/target/
+contracts/lexproof-registry/build-errors.txt

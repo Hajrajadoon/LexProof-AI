@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "casper-js-sdk": "^5.2.0"
+  }
+}
