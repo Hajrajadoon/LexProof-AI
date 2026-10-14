@@ -4,13 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
+name = "lexproof_registry"
 crate-type = ["cdylib"]
+path = "src/lib.rs"
+bench = false
+doctest = false
+test = false
 
 [dependencies]
-casper-contract = "=4.0.0"
-casper-types = "=4.0.2"
+casper-contract = "=5.1.1"
+casper-types = "=6.1.0"
 
 [profile.release]
-lto = true
 codegen-units = 1
-opt-level = "z"
+lto = true
+panic = "abort"
+debug = false
+opt-level = 3

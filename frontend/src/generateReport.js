@@ -95,6 +95,23 @@ export function generateReport(analysis) {
     y
   );
 
+  const onChain = analysis.chain_status === "success";
+  y = addSection(
+    doc,
+    "Blockchain Verification",
+    onChain
+      ? [
+          `Status: Registered on the Casper blockchain (${analysis.chain_network || "casper-test"})`,
+          `Transaction: ${analysis.chain_tx_hash || "n/a"}`,
+          `Contract: ${analysis.chain_contract_hash || "n/a"}`,
+          `Registered by account: ${analysis.chain_account || "n/a"}`,
+          `Registered at: ${analysis.chain_registered_at || "n/a"}`,
+          "Only the SHA-256 hash is stored on-chain, not the document contents.",
+        ].join("\n")
+      : "Not registered on a blockchain.",
+    y
+  );
+
   addSection(
     doc,
     "Important Disclaimer",

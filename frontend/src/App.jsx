@@ -5,6 +5,13 @@ import {
   connectCasperWallet,
   disconnectCasperWallet,
 } from "./casperWallet";
+import {
+  getChainConfig,
+  registerHashOnChain,
+  saveChainResult,
+  verifyHashOnChain,
+  waitForTx,
+} from "./casperRegistry";
 import "./App.css";
 
 const API_URL = (
@@ -135,6 +142,18 @@ function getObligationText(item) {
   );
 }
 
+function chainFields(record = {}) {
+  return {
+    chain_tx_hash: record.chain_tx_hash || null,
+    chain_status: record.chain_status || null,
+    chain_network: record.chain_network || null,
+    chain_contract_hash: record.chain_contract_hash || null,
+    chain_account: record.chain_account || null,
+    chain_error: record.chain_error || null,
+    chain_registered_at: record.chain_registered_at || null,
+  };
+}
+
 function App() {
   const fileInput = useRef(null);
 
@@ -151,6 +170,9 @@ function App() {
   const [walletPublicKey, setWalletPublicKey] = useState("");
 const [walletLoading, setWalletLoading] = useState(false);
 const [walletError, setWalletError] = useState("");
+  const [chainConfig, setChainConfig] = useState(null);
+  const [chainBusy, setChainBusy] = useState(false);
+  const [chainMessage, setChainMessage] = useState("");
 
 const handleConnectWallet = async () => {
   setWalletLoading(true);
@@ -277,6 +299,12 @@ const handleDisconnectWallet = async () => {
     loadHistory();
   }, [loadHistory]);
 
+  useEffect(() => {
+    getChainConfig(API_URL)
+      .then(setChainConfig)
+      .catch(() => setChainConfig({ configured: false }));
+  }, []);
+
   function handleFileChange(event) {
     const selectedFile = event.target.files?.[0];
 
@@ -392,6 +420,126 @@ const handleDisconnectWallet = async () => {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleRegisterOnChain() {
+    const hash = (analysis?.sha256 || analysis?.file_hash || "").toLowerCase();
+
+    if (!analysis?.id || !hash) {
+      setChainMessage("Analyze a document first.");
+      return;
+    }
+
+    if (!chainConfig?.configured) {
+      setChainMessage(
+        "Blockchain is not configured. Add CASPER_CONTRACT_HASH to backend/.env and restart the backend."
+      );
+      return;
+    }
+
+    setChainBusy(true);
+    setChainMessage("");
+
+    try {
+      // Free check first, so we do not pay to register a duplicate.
+      try {
+        const existing = await verifyHashOnChain(API_URL, hash);
+        if (existing.registered) {
+          setChainMessage("This hash is already registered on the blockchain.");
+          return;
+        }
+      } catch {
+        // If the check fails, continue to registration.
+      }
+
+      setChainMessage("Connecting to Casper Wallet...");
+      const { provider, publicKey } = await connectCasperWallet();
+      setWalletPublicKey(publicKey);
+
+      setChainMessage(
+        "Approve the transaction in Casper Wallet. It uses a small amount of CSPR."
+      );
+
+      const txHash = await registerHashOnChain({
+        apiUrl: API_URL,
+        provider,
+        publicKey,
+        contractHash: chainConfig.contract_hash,
+        network: chainConfig.network,
+        documentHash: hash,
+      });
+
+      await saveChainResult(API_URL, analysis.id, {
+        tx_hash: txHash,
+        status: "pending",
+        account: publicKey,
+      });
+
+      setAnalysis((prev) => ({
+        ...prev,
+        chain_tx_hash: txHash,
+        chain_status: "pending",
+        chain_network: chainConfig.network,
+        chain_account: publicKey,
+      }));
+
+      setChainMessage("Transaction sent. Waiting for the network to confirm...");
+
+      const finalResult = await waitForTx(API_URL, txHash);
+
+      const saved = await saveChainResult(API_URL, analysis.id, {
+        tx_hash: txHash,
+        status: finalResult.status,
+        account: publicKey,
+        error: finalResult.error,
+      });
+
+      setAnalysis((prev) => ({ ...prev, ...chainFields(saved) }));
+
+      setChainMessage(
+        finalResult.status === "success"
+          ? "Registered on the Casper blockchain."
+          : finalResult.status === "failed"
+            ? `The transaction failed: ${finalResult.error || "unknown error"}`
+            : "Still pending. Press Verify on-chain in a minute."
+      );
+
+      await loadHistory();
+    } catch (error) {
+      setChainMessage(
+        error instanceof Error ? error.message : "Blockchain registration failed."
+      );
+    } finally {
+      setChainBusy(false);
+    }
+  }
+
+  async function handleVerifyOnChain() {
+    const hash = (analysis?.sha256 || analysis?.file_hash || "").toLowerCase();
+
+    if (!hash) return;
+
+    setChainBusy(true);
+    setChainMessage("Checking the blockchain...");
+
+    try {
+      const result = await verifyHashOnChain(API_URL, hash);
+      setChainMessage(
+        result.registered
+          ? "Verified: this hash is registered on the Casper blockchain."
+          : "Not found: this hash is not registered on the blockchain."
+      );
+    } catch (error) {
+      setChainMessage(
+        error instanceof Error ? error.message : "Verification failed."
+      );
+    } finally {
+      setChainBusy(false);
+    }
+  }
+
+  function explorerLink(txHash) {
+    return `${chainConfig?.explorer_tx_url || "https://testnet.cspr.live/transaction/"}${txHash}`;
   }
 
   async function copyHash() {
@@ -624,8 +772,10 @@ const handleDisconnectWallet = async () => {
                     <span>Verified records</span>
                     <span className="stat-icon green">⬡</span>
                   </div>
-                  <div className="stat-value">0</div>
-                  <div className="stat-foot">Blockchain integration pending</div>
+                  <div className="stat-value">
+                    {analysisHistory.filter((item) => item.chain_status === "success").length}
+                  </div>
+                  <div className="stat-foot">Registered on Casper blockchain</div>
                 </div>
               </section>
 
@@ -711,8 +861,8 @@ const handleDisconnectWallet = async () => {
                 <div className="action-explanation">
                   <span className="action-lock">⌑</span>
                   <span>
-                    AI-powered contract analysis is connected. Blockchain
-                    registration is still in development.
+                    AI analysis is connected. After analyzing, register the
+                    document hash on the Casper blockchain from the results.
                   </span>
                 </div>
 
@@ -1055,8 +1205,9 @@ const handleDisconnectWallet = async () => {
                   <div className="panel hash-panel">
                     <h3>SHA-256 document hash</h3>
                     <p>
-                      This fingerprint can help check whether text matches a
-                      later copy. It is not yet registered on a blockchain.
+                      {analysis.chain_status === "success"
+                        ? "This hash is registered on the Casper blockchain. Only the hash is stored on-chain, never the document."
+                        : "This fingerprint can help check whether text matches a later copy. Register it on the Casper blockchain to create a verifiable record."}
                     </p>
                     <code className="hash-value">
                       {analysis.sha256 || analysis.file_hash || "Hash not available"}
@@ -1069,6 +1220,55 @@ const handleDisconnectWallet = async () => {
                     >
                       Copy hash
                     </button>
+
+                    {analysis.id && (
+                      <div style={{ marginTop: 16 }}>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={handleRegisterOnChain}
+                          disabled={
+                            chainBusy ||
+                            analysis.chain_status === "success" ||
+                            (!analysis.sha256 && !analysis.file_hash)
+                          }
+                        >
+                          {analysis.chain_status === "success"
+                            ? "Registered on Casper"
+                            : chainBusy
+                              ? "Working..."
+                              : "Register on Casper blockchain"}
+                        </button>{" "}
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={handleVerifyOnChain}
+                          disabled={chainBusy}
+                        >
+                          Verify on-chain
+                        </button>
+
+                        {chainMessage && (
+                          <p role="status" style={{ marginTop: 12 }}>
+                            {chainMessage}
+                          </p>
+                        )}
+
+                        {analysis.chain_tx_hash && (
+                          <p style={{ marginTop: 8 }}>
+                            Transaction:{" "}
+                            <a
+                              href={explorerLink(analysis.chain_tx_hash)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {analysis.chain_tx_hash.slice(0, 16)}...
+                            </a>{" "}
+                            ({analysis.chain_status})
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div className="panel flags-panel">
@@ -1208,14 +1408,60 @@ const handleDisconnectWallet = async () => {
               </button>
             </section>
           ) : (
-            <section className="panel coming-soon">
-              <div className="coming-icon">⬡</div>
+            <section className="panel">
               <h3>Blockchain verification</h3>
               <p>
-                On-chain hash registration and verification will be added
-                after the dedicated smart contract is implemented.
+                Documents are registered on the Casper blockchain by their
+                SHA-256 hash only. The document itself never leaves your
+                backend.
               </p>
-              <span className="step-badge">IN DEVELOPMENT</span>
+
+              {!chainConfig?.configured && (
+                <p role="alert">
+                  The backend has no CASPER_CONTRACT_HASH yet. Deploy the
+                  contract and add its hash to backend/.env.
+                </p>
+              )}
+
+              {analysisHistory.filter((item) => item.chain_status).length === 0 ? (
+                <p>
+                  No documents have been registered yet. Analyze a document in
+                  Overview, then press Register on Casper blockchain.
+                </p>
+              ) : (
+                analysisHistory
+                  .filter((item) => item.chain_status)
+                  .map((item) => (
+                    <div key={item.id} style={{ margin: "12px 0" }}>
+                      <strong>{item.filename}</strong> ({item.chain_status})
+                      {item.chain_tx_hash && (
+                        <>
+                          {" "}
+                          <a
+                            href={explorerLink(item.chain_tx_hash)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            View transaction
+                          </a>
+                        </>
+                      )}
+                      <div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => {
+                            viewSavedResult(item);
+                            setActiveTab("overview");
+                          }}
+                        >
+                          Open result
+                        </button>
+                      </div>
+                    </div>
+                  ))
+              )}
+
               <button
                 type="button"
                 className="secondary-button"

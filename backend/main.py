@@ -3,12 +3,15 @@ import hashlib
 import json
 import logging
 import os
+import re
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pypdf import PdfReader
@@ -44,6 +47,23 @@ GEMINI_MODEL = os.getenv(
 
 MAX_PDF_SIZE = 15 * 1024 * 1024
 MAX_TEXT_LENGTH = 100_000
+
+# Casper blockchain settings (set these in backend/.env)
+CASPER_NODE_RPC = os.getenv(
+    "CASPER_NODE_RPC", "https://node.testnet.casper.network/rpc"
+).strip()
+CASPER_NETWORK = os.getenv("CASPER_NETWORK", "casper-test").strip()
+CASPER_CONTRACT_HASH = re.sub(
+    r"^(hash-|entity-contract-)",
+    "",
+    os.getenv("CASPER_CONTRACT_HASH", "").strip(),
+)
+# Optional but recommended: the registry dictionary's URef, shown as the
+# "lexproof_registry" named key on your account page.
+CASPER_REGISTRY_UREF = os.getenv("CASPER_REGISTRY_UREF", "").strip()
+CASPER_EXPLORER_TX_URL = os.getenv(
+    "CASPER_EXPLORER_TX_URL", "https://testnet.cspr.live/transaction/"
+).strip()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("lexproof")
@@ -149,6 +169,15 @@ class AnalysisRecord(Base):
         default=list,
     )
 
+    # Blockchain registration (only the hash goes on-chain)
+    chain_tx_hash = Column(String(64), nullable=True)
+    chain_status = Column(String(20), nullable=True)
+    chain_network = Column(String(40), nullable=True)
+    chain_contract_hash = Column(String(64), nullable=True)
+    chain_account = Column(String(80), nullable=True)
+    chain_error = Column(Text, nullable=True)
+    chain_registered_at = Column(DateTime(timezone=True), nullable=True)
+
 
 # ---------------------------------------------------------
 # Database initialization and migration
@@ -211,6 +240,17 @@ def initialize_database() -> None:
         "sha256": "VARCHAR(64) NOT NULL DEFAULT ''",
         "flags": (
             "JSON NOT NULL DEFAULT '[]'"
+        ),
+        "chain_tx_hash": "VARCHAR(64)",
+        "chain_status": "VARCHAR(20)",
+        "chain_network": "VARCHAR(40)",
+        "chain_contract_hash": "VARCHAR(64)",
+        "chain_account": "VARCHAR(80)",
+        "chain_error": "TEXT",
+        "chain_registered_at": (
+            "TIMESTAMP WITH TIME ZONE"
+            if engine.dialect.name == "postgresql"
+            else "DATETIME"
         ),
     }
 
@@ -667,6 +707,17 @@ def serialize_record(
         "created_at": (
             created_at.isoformat() if created_at else None
         ),
+        "chain_tx_hash": record.chain_tx_hash,
+        "chain_status": record.chain_status,
+        "chain_network": record.chain_network,
+        "chain_contract_hash": record.chain_contract_hash,
+        "chain_account": record.chain_account,
+        "chain_error": record.chain_error,
+        "chain_registered_at": (
+            record.chain_registered_at.isoformat()
+            if record.chain_registered_at
+            else None
+        ),
     }
 
 
@@ -929,6 +980,293 @@ def get_analysis(
         raise HTTPException(
             status_code=500,
             detail="Unable to retrieve this analysis.",
+        ) from exc
+
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------
+# Casper blockchain integration
+# Only the SHA-256 hash is ever sent to the blockchain.
+# ---------------------------------------------------------
+
+HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
+
+ALLOWED_RPC_METHODS = {
+    "account_put_transaction",
+    "account_put_deploy",
+    "info_get_transaction",
+    "info_get_deploy",
+    "info_get_status",
+    "state_get_dictionary_item",
+    "query_global_state",
+    "chain_get_state_root_hash",
+    "state_get_account_info",
+    "query_balance",
+}
+
+
+def casper_rpc_call(payload: dict[str, Any]) -> dict[str, Any]:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        CASPER_NODE_RPC,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    except urllib.error.HTTPError as exc:
+        try:
+            return json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Casper node returned HTTP {exc.code}.",
+            ) from exc
+
+    except Exception as exc:
+        logger.exception("Casper node request failed.")
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach the Casper node.",
+        ) from exc
+
+
+@app.post("/api/casper/rpc")
+def casper_rpc_proxy(
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """Forward signed transactions and queries to the Casper node.
+
+    The browser cannot call the node directly because of CORS.
+    """
+
+    if payload.get("method") not in ALLOWED_RPC_METHODS:
+        raise HTTPException(
+            status_code=400,
+            detail="This RPC method is not allowed.",
+        )
+
+    return casper_rpc_call(payload)
+
+
+@app.get("/api/blockchain/config")
+def blockchain_config() -> dict[str, Any]:
+    return {
+        "network": CASPER_NETWORK,
+        "contract_hash": CASPER_CONTRACT_HASH,
+        "configured": bool(CASPER_CONTRACT_HASH),
+        "explorer_tx_url": CASPER_EXPLORER_TX_URL,
+    }
+
+
+def _walk_execution(obj: Any, found: dict[str, Any]) -> None:
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "Failure":
+                found["failure"] = True
+            if key == "error_message" and isinstance(value, str) and value:
+                found["error"] = value
+            _walk_execution(value, found)
+    elif isinstance(obj, list):
+        for item in obj:
+            _walk_execution(item, found)
+
+
+@app.get("/api/blockchain/tx/{tx_hash}")
+def blockchain_tx_status(tx_hash: str) -> dict[str, Any]:
+    if not HEX64.match(tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid transaction hash.")
+
+    attempts = [
+        ("info_get_transaction", {"transaction_hash": {"Deploy": tx_hash}}),
+        ("info_get_deploy", {"deploy_hash": tx_hash}),
+    ]
+
+    result = None
+
+    for method, params in attempts:
+        response = casper_rpc_call(
+            {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+        )
+        if "result" in response:
+            result = response["result"]
+            break
+
+    if not result:
+        return {"status": "pending", "error": None}
+
+    executed = bool(
+        (result.get("execution_info") or {}).get("execution_result")
+    ) or bool(result.get("execution_results"))
+
+    if not executed:
+        return {"status": "pending", "error": None}
+
+    found: dict[str, Any] = {"failure": False, "error": None}
+    _walk_execution(result, found)
+
+    if found["failure"] or found["error"]:
+        return {
+            "status": "failed",
+            "error": found["error"] or "Execution failed.",
+        }
+
+    return {"status": "success", "error": None}
+
+
+@app.get("/api/blockchain/verify/{document_hash}")
+def blockchain_verify(document_hash: str) -> dict[str, Any]:
+    if not CASPER_CONTRACT_HASH and not CASPER_REGISTRY_UREF:
+        raise HTTPException(
+            status_code=503,
+            detail="CASPER_CONTRACT_HASH is not set in backend/.env.",
+        )
+
+    if not HEX64.match(document_hash):
+        raise HTTPException(status_code=400, detail="Invalid document hash.")
+
+    document_hash = document_hash.lower()
+
+    # The node needs the current state root hash for dictionary lookups.
+    root_response = casper_rpc_call(
+        {"jsonrpc": "2.0", "id": 1, "method": "chain_get_state_root_hash"}
+    )
+    state_root = (root_response.get("result") or {}).get("state_root_hash")
+
+    if not state_root:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not read the state root hash: {root_response.get('error')}",
+        )
+
+    identifiers: list[dict[str, Any]] = []
+
+    if CASPER_REGISTRY_UREF:
+        identifiers.append(
+            {
+                "URef": {
+                    "seed_uref": CASPER_REGISTRY_UREF,
+                    "dictionary_item_key": document_hash,
+                }
+            }
+        )
+
+    if CASPER_CONTRACT_HASH:
+        for prefix in ("hash-", "entity-contract-"):
+            identifiers.append(
+                {
+                    "ContractNamedKey": {
+                        "key": f"{prefix}{CASPER_CONTRACT_HASH}",
+                        "dictionary_name": "lexproof_registry",
+                        "dictionary_item_key": document_hash,
+                    }
+                }
+            )
+
+    errors: list[Any] = []
+
+    for identifier in identifiers:
+        response = casper_rpc_call(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "state_get_dictionary_item",
+                "params": {
+                    "state_root_hash": state_root,
+                    "dictionary_identifier": identifier,
+                },
+            }
+        )
+
+        if "result" in response:
+            return {
+                "document_hash": document_hash,
+                "registered": True,
+                "contract_hash": CASPER_CONTRACT_HASH,
+            }
+
+        errors.append(response.get("error"))
+
+    error_text = json.dumps(errors).lower()
+
+    if "not found" in error_text or "valuenotfound" in error_text:
+        return {
+            "document_hash": document_hash,
+            "registered": False,
+            "contract_hash": CASPER_CONTRACT_HASH,
+        }
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"Unexpected response from the Casper node: {errors}",
+    )
+
+
+class BlockchainUpdate(BaseModel):
+    tx_hash: str
+    status: str
+    account: str | None = None
+    error: str | None = None
+
+
+@app.post("/api/analyses/{analysis_id}/blockchain")
+def save_blockchain_result(
+    analysis_id: int,
+    update: BlockchainUpdate,
+) -> dict[str, Any]:
+    if not HEX64.match(update.tx_hash):
+        raise HTTPException(status_code=400, detail="Invalid transaction hash.")
+
+    if update.status not in {"pending", "success", "failed"}:
+        raise HTTPException(status_code=400, detail="Invalid status.")
+
+    db = SessionLocal()
+
+    try:
+        record = (
+            db.query(AnalysisRecord)
+            .filter(AnalysisRecord.id == analysis_id)
+            .first()
+        )
+
+        if record is None:
+            raise HTTPException(
+                status_code=404, detail="Analysis record not found."
+            )
+
+        record.chain_tx_hash = update.tx_hash.lower()
+        record.chain_status = update.status
+        record.chain_network = CASPER_NETWORK
+        record.chain_contract_hash = CASPER_CONTRACT_HASH or None
+        record.chain_account = update.account
+        record.chain_error = update.error
+
+        if update.status == "success" and not record.chain_registered_at:
+            record.chain_registered_at = get_utc_now()
+
+        db.commit()
+        db.refresh(record)
+
+        return serialize_record(record)
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to save blockchain result.")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save the blockchain result.",
         ) from exc
 
     finally:
