@@ -121,7 +121,7 @@ The platform is fully deployed: the frontend runs on **Netlify**, the backend AP
 
 ## Key Features
 
-- **PDF and text analysis**: upload a PDF (up to 10 MB) or paste contract text (up to 100,000 characters).
+- **PDF and text analysis**: upload a PDF (up to 15 MB) or paste contract text (up to 100,000 characters).
 - **Structured AI report**: document type, summary, key obligations, risk findings with severity, evidence quotes and suggested review, and questions for a lawyer.
 - **Evidence checking**: quotes returned by the AI are checked against the document, and findings whose quote cannot be verified are labelled as such.
 - **Keyword scan fallback**: a lightweight scan still runs if the AI service is unavailable.
@@ -501,8 +501,6 @@ LexProof-AI/
 │       ├── rust-toolchain.toml
 │       ├── Cargo.toml
 │       └── Cargo.lock
-├── docs/
-│   └── logo-banner.png
 └── package.json
 ```
 
@@ -602,7 +600,7 @@ Vite reads `.env` only when it starts, so restart `npm run dev` after changing i
 
 ## Using the App
 
-1. Open the [live app](https://lexproof-ai.netlify.app/) and **upload a PDF** (up to 10 MB) or **paste contract text**, then press **Analyze document**.
+1. Open the [live app](https://lexproof-ai.netlify.app/) and **upload a PDF** (up to 15 MB) or **paste contract text**, then press **Analyze document**.
 2. Read the AI report: summary, key obligations, risk findings with evidence, and questions for a lawyer.
 3. Press **Register on Casper blockchain**. Casper Wallet asks you to connect and then to sign. Keep the wallet on Testnet.
 4. Wait about a minute. The page reports when the hash is registered, and the record is saved with its transaction link.
@@ -819,7 +817,7 @@ Contributions, ideas, and feedback are welcome.
 
 ## License
 
-This project is released under the **MIT License**. See the `LICENSE` file for details.
+This project is released under the **MIT License**.
 
 ---
 
