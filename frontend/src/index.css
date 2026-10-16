@@ -1,22 +1,23 @@
 html {
-min-width: 320px;
-min-height: 100%;
-background: #f7f8fc;
+  min-width: 320px;
+  min-height: 100%;
+  background: #f3f5fa;
+  scroll-behavior: smooth;
 }
 
 body {
-min-width: 320px;
-min-height: 100vh;
-margin: 0;
-}
-
-button:focus-visible,
-textarea:focus-visible {
-outline: 2px solid #716be5;
-outline-offset: 3px;
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
 }
 
 ::selection {
-background: #dedfff;
-color: #252b45;
+  background: #cfe0ff;
+  color: #0f1e3d;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
 }
